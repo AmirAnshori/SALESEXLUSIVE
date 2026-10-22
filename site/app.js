@@ -43,8 +43,35 @@ function validate(master,raw){
   const aligned=[columns.map(c=>c[0]),...rows.slice(best.index+1).map(r=>best.map.map(m=>m.length?r[m[0]]??'':''))];
   rows.length=0;for(const row of aligned)rows.push(row);
  }
- align(master,masterColumns,[[0],[1],[2],[9]],'DB ALL STORE');
  align(raw,rawColumns,[[0],[2,13],[3,4],[8],[10],[7,12]],'RAWDATA SO QTY');
+ // Recognize only the reported legacy layout; never treat an Area value as a distributor.
+ const legacy=['Area','Nama Sales','Nama Toko','GRADE','STATUS*','FIRST ORDER','LAST ORDER','REKOMENDASI','Key','Area'].map(headerKey);
+ const legacyIndex=master.slice(0,20).findIndex(r=>r.length===legacy.length&&r.every((v,i)=>headerKey(v)===legacy[i]));
+ if(legacyIndex>=0){
+  const same=(a,b)=>String(a??'').normalize('NFKC').trim().replace(/\\s+/g,' ').toUpperCase()===String(b??'').normalize('NFKC').trim().replace(/\\s+/g,' ').toUpperCase();
+  const transactions=new Map();
+  for(const r of raw.slice(1)){
+   const name=headerKey(r[4]||r[3]);
+   if(!transactions.has(name))transactions.set(name,[]);
+   transactions.get(name).push(r);
+  }
+  const seen=new Map();
+  for(const r of master.slice(legacyIndex+1)){
+   if(!String(r[2]??'').trim())continue;
+   const matches=(transactions.get(headerKey(r[2]))||[]).filter(t=>same(t[4]||t[3],r[2])&&(!t[16]||same(t[16],r[9]))&&(!t[17]||same(t[17],r[1])));
+   if((transactions.get(headerKey(r[2]))||[]).some(t=>same(t[4]||t[3],r[2]))&&!matches.length)throw Error('DB ALL STORE: sales/area tidak cocok dengan transaksi untuk toko '+r[2]+'. Periksa master atau tambahkan Nama Distri yang benar.');
+   const distributors=new Map();
+   for(const t of matches){const d=String(t[13]||t[2]||'').trim();if(d)distributors.set(d.toUpperCase(),d);}
+   if(distributors.size>1)throw Error('DB ALL STORE: distributor ambigu untuk toko '+r[2]+'. Perbaiki header pertama menjadi Nama Distri dan isi distributor yang benar.');
+   r[0]=[...distributors.values()][0]||'';
+   const identity=JSON.stringify([headerKey(r[2]),r[0].toUpperCase()]);
+   const assignment=JSON.stringify([headerKey(r[1]),headerKey(r[9])]);
+   if(seen.has(identity)&&seen.get(identity)!==assignment)throw Error('DB ALL STORE: toko '+r[2]+' memiliki beberapa sales/area tanpa distributor yang pasti. Tambahkan kolom Nama Distri yang benar.');
+   seen.set(identity,assignment);
+  }
+  master[legacyIndex][0]='Nama Distri';
+ }
+ align(master,masterColumns,[[0],[1],[2],[9]],'DB ALL STORE');
 }
 
 async function load(live=false){if(busy)return;busy=true;$('refresh').disabled=true;$('connect').disabled=true;try{if(live){$('status').textContent='Mengambil dua tab Google Sheets…';let [m,r]=await Promise.all([fetchText(config.masterUrl),fetchText(config.rawUrl)]);let master=parseSource(m),raw=parseSource(r);validate(master,raw);accept(C.prepare(master,raw,new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Jakarta'})),'Google Sheets • CSV langsung');localMode=false;}else{if(!window.SALES_CONFIG.snapshotUrl){$('status').className='status';$('status').textContent='Belum ada sumber data. Klik Sumber data untuk mengimpor dua CSV lokal atau menghubungkan Google Sheets. File CSV lokal hanya diproses di browser Anda.';return true;}let res=await fetch(window.SALES_CONFIG.snapshotUrl);if(!res.ok)throw Error('Snapshot tidak ditemukan. Jalankan melalui hosting/server HTTP.');accept(JSON.parse(await new Response(res.body.pipeThrough(new DecompressionStream('gzip'))).text()),'Snapshot TEST DATA PROJECT • bukan sinkronisasi langsung');localMode=false;}return true;}catch(e){$('status').className='status error';$('status').textContent='Gagal memperbarui: '+e.message+(data?' Data terakhir masih ditampilkan.':'');$('connectError').textContent=e.message;return false;}finally{busy=false;$('refresh').disabled=false;$('connect').disabled=false;}}
